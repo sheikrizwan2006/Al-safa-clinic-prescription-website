@@ -8,9 +8,11 @@
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+Tamil:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore-compat.js"></script>
 <style>
 /* ============ DESIGN TOKENS ============ */
-:root{
+:root{ 
   --navy:#0F172A;
   --navy-2:#152037;
   --navy-soft:#1E2A45;
@@ -603,6 +605,100 @@ table.med-table{width:100%; border-collapse:collapse; font-size:12.5px;}
 </div>
 
 <script>
+/* ====================== FIREBASE (Patient Database) ======================
+   1. Go to https://console.firebase.google.com -> Create a project (or reuse
+      an existing one).
+   2. Build -> Firestore Database -> Create database (start in production
+      mode, pick a region close to Chennai e.g. asia-south1).
+   3. Project settings (gear icon) -> General -> "Your apps" -> Add app -> Web (</>) 
+      -> copy the firebaseConfig object it gives you and paste the values below.
+   4. Firestore -> Rules, and set (adjust once you add real staff login/auth):
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /patients/{patientId} {
+              allow read, write: if true;
+            }
+          }
+        }
+      (The rule above is open for now so the clinic dashboard works without a
+      login system. Tighten it to `if request.auth != null` once you wire up
+      Firebase Authentication, matching what you did for Crown Pharmacy.)
+   Until real values are pasted in below, the app automatically falls back to
+   browser storage so nothing breaks in the meantime. */
+const firebaseConfig = {
+  apiKey: "AIzaSyDEBD_zleH1uQc_KAQYFNXv4w_nsyTiMO4",
+  authDomain: "clinic-prescription.firebaseapp.com",
+  projectId: "clinic-prescription",
+  storageBucket: "clinic-prescription.firebasestorage.app",
+  messagingSenderId: "71898845722",
+  appId: "1:71898845722:web:09534179288b9021adf7a3"
+};
+const PATIENTS_COLLECTION = 'patients';
+let db = null;
+let patientsUnsub = null;
+
+(function initFirebase(){
+  try{
+    if(firebaseConfig.apiKey === 'YOUR_API_KEY'){
+      console.warn('Firebase config not filled in yet — patient data will only be saved in this browser until you add your project keys.');
+      return;
+    }
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    try{ db.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
+  }catch(e){
+    console.warn('Firebase init failed, falling back to local storage.', e);
+    db = null;
+  }
+})();
+
+/* Seed Firestore with the sample patients once, only if the collection is empty,
+   so existing demo records aren't lost the first time a real project is connected. */
+async function ensurePatientsSeeded(){
+  if(!db) return;
+  try{
+    const snap = await db.collection(PATIENTS_COLLECTION).limit(1).get();
+    if(snap.empty){
+      const batch = db.batch();
+      SAMPLE_PATIENTS.forEach(p=>{
+        const {id, ...rest} = p;
+        batch.set(db.collection(PATIENTS_COLLECTION).doc(id), rest);
+      });
+      await batch.commit();
+      console.log('Seeded Firestore "patients" collection with starter data.');
+    }
+  }catch(e){
+    console.warn('Could not check/seed the patients collection.', e);
+    throw e;
+  }
+}
+
+/* Live listener: keeps `patients` in sync across every device connected to
+   this Firebase project. Resolves true once the first snapshot arrives. */
+function attachPatientsListener(){
+  if(!db) return Promise.resolve(false);
+  return new Promise((resolve)=>{
+    let resolved = false;
+    try{
+      if(patientsUnsub) patientsUnsub();
+      patientsUnsub = db.collection(PATIENTS_COLLECTION).onSnapshot(snap=>{
+        patients = snap.docs.map(d=>({id:d.id, ...d.data()}));
+        renderPatientPicker();
+        renderPatientsGrid();
+        buildDashboard();
+        if(!resolved){ resolved = true; resolve(true); }
+      }, err=>{
+        console.warn('Firestore patients listener error, falling back to local storage.', err);
+        if(!resolved){ resolved = true; resolve(false); }
+      });
+    }catch(e){
+      console.warn('Failed to attach Firestore patients listener.', e);
+      if(!resolved){ resolved = true; resolve(false); }
+    }
+  });
+}
+
 /* ====================== DATA ====================== */
 const BASE_MEDICINES = [{"name":"A-Clin","form":"Other","strength":"","mrp":103.0,"id":"M0001"},{"name":"Acitin25","form":"Other","strength":"","mrp":534.0,"id":"M0002"},{"name":"Acitin25 10","form":"Other","strength":"","mrp":534.0,"id":"M0003"},{"name":"Acnegate","form":"Other","strength":"","mrp":162.83,"id":"M0004"},{"name":"Acnovate","form":"Other","strength":"","mrp":317.3,"id":"M0005"},{"name":"AF 400","form":"Other","strength":"","mrp":27.37,"id":"M0006"},{"name":"AF 400 1","form":"Other","strength":"","mrp":27.37,"id":"M0007"},{"name":"Afthuss","form":"Other","strength":"","mrp":98.0,"id":"M0008"},{"name":"Age-Q","form":"Other","strength":"","mrp":1900.0,"id":"M0009"},{"name":"Ahanext 12%","form":"Other","strength":"12%","mrp":515.0,"id":"M0010"},{"name":"Amlopres AT","form":"Other","strength":"","mrp":185.0,"id":"M0011"},{"name":"Anaero gel","form":"Gel","strength":"","mrp":168.0,"id":"M0012"},{"name":"Anorelief","form":"Other","strength":"","mrp":185.0,"id":"M0013"},{"name":"Antiflu 75 mg","form":"Other","strength":"75 mg","mrp":906.0,"id":"M0014"},{"name":"Antiflu75 mg","form":"Other","strength":"75 mg","mrp":906.0,"id":"M0015"},{"name":"Apexitra SB65","form":"Other","strength":"","mrp":153.8,"id":"M0016"},{"name":"Aquasoft cv lotion","form":"Lotion","strength":"","mrp":355.0,"id":"M0017"},{"name":"Atarax 25mg","form":"Other","strength":"25mg","mrp":106.4,"id":"M0018"},{"name":"Atarax 50 SR","form":"Other","strength":"","mrp":238.0,"id":"M0019"},{"name":"Atarax long","form":"Other","strength":"","mrp":58.53,"id":"M0020"},{"name":"Atogla Probio Sachet","form":"Sachet","strength":"","mrp":620.0,"id":"M0021"},{"name":"Atonide h cream","form":"Cream","strength":"","mrp":236.0,"id":"M0022"},{"name":"Augmentin 375","form":"Other","strength":"","mrp":259.64,"id":"M0023"},{"name":"Augmentin 375 10","form":"Other","strength":"","mrp":259.64,"id":"M0024"},{"name":"Augmentin 625","form":"Other","strength":"","mrp":195.39,"id":"M0025"},{"name":"Augmentin 625 10","form":"Other","strength":"","mrp":195.39,"id":"M0026"},{"name":"Averzine 25","form":"Other","strength":"","mrp":83.0,"id":"M0027"},{"name":"Aziderm plus","form":"Other","strength":"","mrp":348.0,"id":"M0028"},{"name":"Azithral 500","form":"Other","strength":"","mrp":125.89,"id":"M0029"},{"name":"Aztor 10mg","form":"Other","strength":"10mg","mrp":80.0,"id":"M0030"},{"name":"Aztor 20mg","form":"Other","strength":"20mg","mrp":214.0,"id":"M0031"},{"name":"B sys","form":"Other","strength":"","mrp":51.56,"id":"M0032"},{"name":"B sys 10","form":"Other","strength":"","mrp":51.56,"id":"M0033"},{"name":"B sys M","form":"Other","strength":"","mrp":75.0,"id":"M0034"},{"name":"Banac Bodywash","form":"Wash","strength":"","mrp":425.0,"id":"M0035"},{"name":"Banray OSR","form":"Other","strength":"","mrp":400.0,"id":"M0036"},{"name":"BD PRO MAX Advance","form":"Other","strength":"","mrp":1449.0,"id":"M0037"},{"name":"Bekon-c","form":"Other","strength":"","mrp":131.25,"id":"M0038"},{"name":"Bensoft","form":"Other","strength":"","mrp":124.57,"id":"M0039"},{"name":"Benzonix Gelwash","form":"Gel","strength":"","mrp":275.0,"id":"M0040"},{"name":"Betadine gargle","form":"Gargle","strength":"","mrp":313.0,"id":"M0041"},{"name":"Betadine solution","form":"Solution","strength":"","mrp":102.0,"id":"M0042"},{"name":"Bifilac Sachet","form":"Sachet","strength":"","mrp":17.0,"id":"M0043"},{"name":"Bilahym 20","form":"Other","strength":"","mrp":84.0,"id":"M0044"},{"name":"Bilahym 20 10","form":"Other","strength":"","mrp":84.0,"id":"M0045"},{"name":"Bilahym 40","form":"Other","strength":"","mrp":140.0,"id":"M0046"},{"name":"Bilahym 40 10","form":"Other","strength":"","mrp":140.0,"id":"M0047"},{"name":"Bilazap M","form":"Other","strength":"","mrp":186.56,"id":"M0048"},{"name":"Bricenta Gel","form":"Gel","strength":"","mrp":216.0,"id":"M0049"},{"name":"C studart 0.5mg","form":"Other","strength":"0.5mg","mrp":187.0,"id":"M0050"},{"name":"C-Bliz","form":"Other","strength":"","mrp":860.0,"id":"M0051"},{"name":"C.adoxid L","form":"Capsule","strength":"","mrp":65.0,"id":"M0052"},{"name":"C.Apexitra 130 SB","form":"Capsule","strength":"","mrp":283.0,"id":"M0053"},{"name":"C.atogla probio OD","form":"Capsule","strength":"","mrp":729.0,"id":"M0054"},{"name":"C.Brisc Omega","form":"Capsule","strength":"","mrp":146.0,"id":"M0055"},{"name":"C.Brisc Omega forte","form":"Capsule","strength":"","mrp":210.0,"id":"M0056"},{"name":"C.Kdox","form":"Capsule","strength":"","mrp":133.0,"id":"M0057"},{"name":"C.multisol 15g","form":"Capsule","strength":"15g","mrp":165.0,"id":"M0058"},{"name":"C.Nixidox","form":"Capsule","strength":"","mrp":93.0,"id":"M0059"},{"name":"C.peptidor","form":"Capsule","strength":"","mrp":175.0,"id":"M0060"},{"name":"C.rantac RD","form":"Capsule","strength":"","mrp":80.0,"id":"M0061"},{"name":"C.Renerve plus","form":"Capsule","strength":"","mrp":329.0,"id":"M0062"},{"name":"C.skinocean O3","form":"Capsule","strength":"","mrp":330.0,"id":"M0063"},{"name":"C.zitcare","form":"Capsule","strength":"","mrp":373.0,"id":"M0064"},{"name":"C.Zotinea 200","form":"Capsule","strength":"","mrp":231.0,"id":"M0065"},{"name":"Calitch pro lotion","form":"Lotion","strength":"","mrp":300.0,"id":"M0066"},{"name":"Calminox scalp lotion","form":"Lotion","strength":"","mrp":290.63,"id":"M0067"},{"name":"Calmzone Gummy","form":"Other","strength":"","mrp":177.0,"id":"M0068"},{"name":"Calosoft plus","form":"Other","strength":"","mrp":453.0,"id":"M0069"},{"name":"Calzone D3 60 K","form":"Other","strength":"60 K","mrp":122.0,"id":"M0070"},{"name":"Calzone D3 60 K 4","form":"Other","strength":"60 K","mrp":122.0,"id":"M0071"},{"name":"Candid mouth paint","form":"Mouth Paint","strength":"","mrp":184.0,"id":"M0072"},{"name":"Candiforce 130SB","form":"Other","strength":"","mrp":271.0,"id":"M0073"},{"name":"Candiforce 130SB 10","form":"Other","strength":"","mrp":271.0,"id":"M0074"},{"name":"Candiforce 200","form":"Other","strength":"","mrp":247.7,"id":"M0075"},{"name":"Canitiz","form":"Other","strength":"","mrp":169.0,"id":"M0076"},{"name":"Canitiz 10","form":"Other","strength":"","mrp":169.0,"id":"M0077"},{"name":"Cetalore","form":"Other","strength":"","mrp":69.0,"id":"M0078"},{"name":"Chekfall","form":"Other","strength":"","mrp":862.49,"id":"M0079"},{"name":"Chitomesh-SF","form":"Other","strength":"","mrp":105.0,"id":"M0080"},{"name":"Chymocip","form":"Other","strength":"","mrp":500.0,"id":"M0081"},{"name":"Chymoral BR","form":"Other","strength":"","mrp":339.0,"id":"M0082"},{"name":"Cilacar 5mg","form":"Other","strength":"5mg","mrp":132.17,"id":"M0083"},{"name":"Cipcal 500","form":"Other","strength":"","mrp":104.66,"id":"M0084"},{"name":"Clevira","form":"Other","strength":"","mrp":110.0,"id":"M0085"},{"name":"Clindamust-N","form":"Other","strength":"","mrp":139.0,"id":"M0086"},{"name":"Clinxa","form":"Other","strength":"","mrp":187.0,"id":"M0087"},{"name":"Clinxa-A","form":"Other","strength":"","mrp":291.0,"id":"M0088"},{"name":"Clocip(100 g)","form":"Other","strength":"100 g","mrp":131.0,"id":"M0089"},{"name":"Clocip(75g)","form":"Other","strength":"75g","mrp":95.0,"id":"M0090"},{"name":"Clomic-M cream","form":"Cream","strength":"","mrp":110.61,"id":"M0091"},{"name":"Clomic-S Oinment","form":"Ointment","strength":"","mrp":98.18,"id":"M0092"},{"name":"Clop-S nano lotion","form":"Lotion","strength":"","mrp":224.06,"id":"M0093"},{"name":"Closyn bar","form":"Soap","strength":"","mrp":169.0,"id":"M0094"},{"name":"Clozet","form":"Other","strength":"","mrp":136.0,"id":"M0095"},{"name":"Clozimite-MF","form":"Other","strength":"","mrp":112.0,"id":"M0096"},{"name":"Cosglo New","form":"Other","strength":"","mrp":692.0,"id":"M0097"},{"name":"Cosmo Q Ac","form":"Other","strength":"","mrp":555.0,"id":"M0098"},{"name":"CosmoQ","form":"Other","strength":"","mrp":570.0,"id":"M0099"},{"name":"Curlzmin-AT 5%","form":"Other","strength":"5%","mrp":839.0,"id":"M0100"},{"name":"Cutinix","form":"Other","strength":"","mrp":292.0,"id":"M0101"},{"name":"Cutiwash soft","form":"Wash","strength":"","mrp":419.0,"id":"M0102"},{"name":"Cuvia","form":"Other","strength":"","mrp":272.0,"id":"M0103"},{"name":"CUZRAL","form":"Other","strength":"","mrp":117.0,"id":"M0104"},{"name":"Cyclifol Hexa Female","form":"Other","strength":"","mrp":957.0,"id":"M0105"},{"name":"Cyclopam","form":"Other","strength":"","mrp":59.44,"id":"M0106"},{"name":"D Max soap","form":"Soap","strength":"","mrp":135.0,"id":"M0107"},{"name":"D-Max","form":"Other","strength":"","mrp":170.0,"id":"M0108"},{"name":"Daflon 500","form":"Other","strength":"","mrp":188.73,"id":"M0109"},{"name":"Densyl-P","form":"Other","strength":"","mrp":1400.0,"id":"M0110"},{"name":"Depiclenz","form":"Other","strength":"","mrp":325.0,"id":"M0111"},{"name":"Depimedultra","form":"Other","strength":"","mrp":685.0,"id":"M0112"},{"name":"Deplatt-CV","form":"Other","strength":"","mrp":156.6,"id":"M0113"},{"name":"Deriphyllin","form":"Other","strength":"","mrp":25.63,"id":"M0114"},{"name":"Desosoft cream","form":"Cream","strength":"","mrp":140.63,"id":"M0115"},{"name":"Desosoft lotion","form":"Lotion","strength":"","mrp":165.0,"id":"M0116"},{"name":"Dolo 650","form":"Other","strength":"","mrp":32.12,"id":"M0117"},{"name":"Dolonex D","form":"Other","strength":"","mrp":268.79,"id":"M0118"},{"name":"Dopazin 10","form":"Other","strength":"","mrp":199.0,"id":"M0119"},{"name":"Dopazin 10 10","form":"Other","strength":"","mrp":199.0,"id":"M0120"},{"name":"Doxy vera LB","form":"Other","strength":"","mrp":120.9,"id":"M0121"},{"name":"Doxy vera LB 10","form":"Other","strength":"","mrp":120.9,"id":"M0122"},{"name":"DremzPlus","form":"Other","strength":"","mrp":599.0,"id":"M0123"},{"name":"Ecosprin 75","form":"Other","strength":"","mrp":5.29,"id":"M0124"},{"name":"ekran MS","form":"Other","strength":"","mrp":810.0,"id":"M0125"},{"name":"ekran-30","form":"Other","strength":"","mrp":455.0,"id":"M0126"},{"name":"Eliva crease gel","form":"Gel","strength":"","mrp":430.0,"id":"M0127"},{"name":"Elivia NBR","form":"Other","strength":"","mrp":790.0,"id":"M0128"},{"name":"Emcloriz","form":"Other","strength":"","mrp":140.0,"id":"M0129"},{"name":"EmCloriz B","form":"Other","strength":"","mrp":140.0,"id":"M0130"},{"name":"Emeset-4","form":"Other","strength":"","mrp":58.57,"id":"M0131"},{"name":"Emketo","form":"Other","strength":"","mrp":140.0,"id":"M0132"},{"name":"Endew bar","form":"Soap","strength":"","mrp":124.0,"id":"M0133"},{"name":"Erythrocin 250","form":"Other","strength":"","mrp":62.0,"id":"M0134"},{"name":"Esiflo 250 Transhaler","form":"Inhaler","strength":"","mrp":896.0,"id":"M0135"},{"name":"Eternal bright lotion","form":"Lotion","strength":"","mrp":1900.0,"id":"M0136"},{"name":"Eudilage 100","form":"Other","strength":"","mrp":240.0,"id":"M0137"},{"name":"Extend Gold","form":"Other","strength":"","mrp":146.0,"id":"M0138"},{"name":"Extend Gold 10","form":"Other","strength":"","mrp":146.0,"id":"M0139"},{"name":"Ezimet-F","form":"Other","strength":"","mrp":253.0,"id":"M0140"},{"name":"Facemoist RES-Q serum","form":"Serum","strength":"","mrp":1290.0,"id":"M0141"},{"name":"Faireye","form":"Other","strength":"","mrp":999.0,"id":"M0142"},{"name":"Fairshield","form":"Other","strength":"","mrp":543.0,"id":"M0143"},{"name":"FAIRSOME","form":"Other","strength":"","mrp":180.0,"id":"M0144"},{"name":"Fenlong liniment","form":"Liniment","strength":"","mrp":60.0,"id":"M0145"},{"name":"Fexit","form":"Other","strength":"","mrp":105.0,"id":"M0146"},{"name":"Fexit-M","form":"Other","strength":"","mrp":167.0,"id":"M0147"},{"name":"FG Plus","form":"Other","strength":"","mrp":160.0,"id":"M0148"},{"name":"FG Plus 10","form":"Other","strength":"","mrp":160.0,"id":"M0149"},{"name":"Finezine 5 mg","form":"Other","strength":"5 mg","mrp":43.0,"id":"M0150"},{"name":"Flonida-5%","form":"Other","strength":"5%","mrp":316.0,"id":"M0151"},{"name":"Folitrax 10mg","form":"Other","strength":"10mg","mrp":70.98,"id":"M0152"},{"name":"Folitrax 5","form":"Other","strength":"","mrp":100.7,"id":"M0153"},{"name":"Folitrax LP","form":"Other","strength":"","mrp":347.0,"id":"M0154"},{"name":"Follihair RCP","form":"Other","strength":"","mrp":2079.0,"id":"M0155"},{"name":"Folvite","form":"Other","strength":"","mrp":72.58,"id":"M0156"},{"name":"Fungizen","form":"Other","strength":"","mrp":164.0,"id":"M0157"},{"name":"Gabatin 100","form":"Other","strength":"","mrp":97.5,"id":"M0158"},{"name":"Gabatin 300","form":"Other","strength":"","mrp":250.0,"id":"M0159"},{"name":"Glomycan cream","form":"Cream","strength":"","mrp":289.0,"id":"M0160"},{"name":"Glowel","form":"Other","strength":"","mrp":470.0,"id":"M0161"},{"name":"Glowriance","form":"Other","strength":"","mrp":890.0,"id":"M0162"},{"name":"Glufair","form":"Other","strength":"","mrp":383.0,"id":"M0163"},{"name":"Gluta-9 cream","form":"Cream","strength":"","mrp":950.0,"id":"M0164"},{"name":"Glutaderm Plus","form":"Other","strength":"","mrp":676.0,"id":"M0165"},{"name":"Glyco 12% cream","form":"Cream","strength":"12%","mrp":360.9,"id":"M0166"},{"name":"Glyco-6","form":"Other","strength":"","mrp":419.0,"id":"M0167"},{"name":"Grow-XL Advance","form":"Other","strength":"","mrp":1400.0,"id":"M0168"},{"name":"Growcare Hair oil","form":"Oil","strength":"","mrp":220.0,"id":"M0169"},{"name":"Groxtra RCP","form":"Other","strength":"","mrp":1500.0,"id":"M0170"},{"name":"H-Vit","form":"Other","strength":"","mrp":975.0,"id":"M0171"},{"name":"Habeta-S lotion","form":"Lotion","strength":"","mrp":262.0,"id":"M0172"},{"name":"Hairbless","form":"Other","strength":"","mrp":1450.0,"id":"M0173"},{"name":"Halatop-F","form":"Other","strength":"","mrp":285.0,"id":"M0174"},{"name":"Halatop-S","form":"Other","strength":"","mrp":380.0,"id":"M0175"},{"name":"Halo-S3","form":"Other","strength":"","mrp":180.0,"id":"M0176"},{"name":"Halotop NL","form":"Other","strength":"","mrp":210.0,"id":"M0177"},{"name":"Halotop-S lotion","form":"Lotion","strength":"","mrp":464.25,"id":"M0178"},{"name":"Hbsalic","form":"Other","strength":"","mrp":220.31,"id":"M0179"},{"name":"Hbsone","form":"Other","strength":"","mrp":248.44,"id":"M0180"},{"name":"Hemogyl D","form":"Other","strength":"","mrp":120.0,"id":"M0181"},{"name":"Hemogyl D 10","form":"Other","strength":"","mrp":120.0,"id":"M0182"},{"name":"Herperax","form":"Other","strength":"","mrp":65.0,"id":"M0183"},{"name":"Hetrazon 100","form":"Other","strength":"","mrp":53.1,"id":"M0184"},{"name":"Hexsyn","form":"Other","strength":"","mrp":146.82,"id":"M0185"},{"name":"Hifuzz-B","form":"Other","strength":"","mrp":150.0,"id":"M0186"},{"name":"Hilaro","form":"Other","strength":"","mrp":325.0,"id":"M0187"},{"name":"Histabil","form":"Other","strength":"","mrp":139.69,"id":"M0188"},{"name":"Histabil 10","form":"Other","strength":"","mrp":139.69,"id":"M0189"},{"name":"Ibugesic plus","form":"Other","strength":"","mrp":37.0,"id":"M0190"},{"name":"Imadin","form":"Other","strength":"","mrp":127.0,"id":"M0191"},{"name":"Imogaf forte cream","form":"Cream","strength":"","mrp":309.0,"id":"M0192"},{"name":"Imograf forte lotion","form":"Lotion","strength":"","mrp":581.0,"id":"M0193"},{"name":"iMxia Pro","form":"Other","strength":"","mrp":1355.0,"id":"M0194"},{"name":"Itin A","form":"Other","strength":"","mrp":28.0,"id":"M0195"},{"name":"ITYZA 200","form":"Other","strength":"","mrp":236.0,"id":"M0196"},{"name":"K Zoft","form":"Other","strength":"","mrp":135.0,"id":"M0197"},{"name":"KETAFUNG","form":"Other","strength":"","mrp":155.72,"id":"M0198"},{"name":"Ketodaily Ds","form":"Other","strength":"","mrp":110.0,"id":"M0199"},{"name":"Ketoff soap","form":"Soap","strength":"","mrp":142.4,"id":"M0200"},{"name":"Ketomark","form":"Other","strength":"","mrp":130.0,"id":"M0201"},{"name":"KETOSOAP","form":"Soap","strength":"","mrp":117.0,"id":"M0202"},{"name":"Ketosol","form":"Other","strength":"","mrp":137.0,"id":"M0203"},{"name":"Ketoze","form":"Other","strength":"","mrp":126.0,"id":"M0204"},{"name":"Kiyato-G","form":"Other","strength":"","mrp":177.0,"id":"M0205"},{"name":"Klinsoft-A","form":"Other","strength":"","mrp":163.0,"id":"M0206"},{"name":"KLM FX-M","form":"Other","strength":"","mrp":159.0,"id":"M0207"},{"name":"Klm klin","form":"Other","strength":"","mrp":142.0,"id":"M0208"},{"name":"KLMITE","form":"Other","strength":"","mrp":133.47,"id":"M0209"},{"name":"Kojicure","form":"Other","strength":"","mrp":315.0,"id":"M0210"},{"name":"Kojivit ultra","form":"Other","strength":"","mrp":719.0,"id":"M0211"},{"name":"Kterbimax","form":"Other","strength":"","mrp":210.0,"id":"M0212"},{"name":"La-Matisse","form":"Other","strength":"","mrp":1720.0,"id":"M0213"},{"name":"Lamifin","form":"Other","strength":"","mrp":230.0,"id":"M0214"},{"name":"Lamifin 125DT","form":"Other","strength":"","mrp":139.0,"id":"M0215"},{"name":"Lamifin 125DT 10","form":"Other","strength":"","mrp":139.0,"id":"M0216"},{"name":"Lamifin 250","form":"Other","strength":"","mrp":193.0,"id":"M0217"},{"name":"Lamifin Forte","form":"Other","strength":"","mrp":263.0,"id":"M0218"},{"name":"Lamifin-M","form":"Other","strength":"","mrp":163.0,"id":"M0219"},{"name":"Lariago","form":"Other","strength":"","mrp":14.18,"id":"M0220"},{"name":"Lasix 40mg","form":"Other","strength":"40mg","mrp":15.12,"id":"M0221"},{"name":"Lejet","form":"Other","strength":"","mrp":28.0,"id":"M0222"},{"name":"Lejet 10","form":"Other","strength":"","mrp":28.0,"id":"M0223"},{"name":"Lejet M","form":"Other","strength":"","mrp":121.0,"id":"M0224"},{"name":"Lejet M 10","form":"Other","strength":"","mrp":121.0,"id":"M0225"},{"name":"Levokon m","form":"Other","strength":"","mrp":100.0,"id":"M0226"},{"name":"Levokon m 10","form":"Other","strength":"","mrp":100.0,"id":"M0227"},{"name":"Levosiz 5 mg","form":"Other","strength":"5 mg","mrp":30.93,"id":"M0228"},{"name":"Levosiz 5 mg 10","form":"Other","strength":"5 mg","mrp":30.93,"id":"M0229"},{"name":"Levosiz M 15","form":"Other","strength":"","mrp":101.0,"id":"M0230"},{"name":"Levosiz M kid","form":"Other","strength":"","mrp":41.0,"id":"M0231"},{"name":"Levosiz M LM22","form":"Other","strength":"","mrp":101.0,"id":"M0232"},{"name":"Levosiz10mg","form":"Other","strength":"10mg","mrp":50.0,"id":"M0233"},{"name":"Lilihym lotion","form":"Lotion","strength":"","mrp":158.0,"id":"M0234"},{"name":"Liquet ultra gel","form":"Gel","strength":"","mrp":690.0,"id":"M0235"},{"name":"Litearm","form":"Other","strength":"","mrp":742.5,"id":"M0236"},{"name":"Lmcure-","form":"Other","strength":"","mrp":112.0,"id":"M0237"},{"name":"Losar 50","form":"Other","strength":"","mrp":162.25,"id":"M0238"},{"name":"Losar H","form":"Other","strength":"","mrp":311.86,"id":"M0239"},{"name":"Lozisoft","form":"Other","strength":"","mrp":342.0,"id":"M0240"},{"name":"Lozivate-MF","form":"Other","strength":"","mrp":163.0,"id":"M0241"},{"name":"Lozivate-MF lotion","form":"Lotion","strength":"","mrp":163.0,"id":"M0242"},{"name":"Luliher cream","form":"Cream","strength":"","mrp":206.0,"id":"M0243"},{"name":"Lulilok S","form":"Other","strength":"","mrp":90.69,"id":"M0244"},{"name":"Lulizol-XL Cream","form":"Cream","strength":"","mrp":370.31,"id":"M0245"},{"name":"Mandalin","form":"Other","strength":"","mrp":200.21,"id":"M0246"},{"name":"Maxirich","form":"Other","strength":"","mrp":114.0,"id":"M0247"},{"name":"Meftal Spas","form":"Other","strength":"","mrp":52.0,"id":"M0248"},{"name":"Megaheal","form":"Other","strength":"","mrp":135.0,"id":"M0249"},{"name":"Metrogyl 400","form":"Other","strength":"","mrp":34.04,"id":"M0250"},{"name":"Metrogyl-M","form":"Other","strength":"","mrp":189.77,"id":"M0251"},{"name":"MFSone","form":"Other","strength":"","mrp":215.62,"id":"M0252"},{"name":"Microcid","form":"Other","strength":"","mrp":54.5,"id":"M0253"},{"name":"Microvir 500","form":"Other","strength":"","mrp":395.0,"id":"M0254"},{"name":"Minoz gel","form":"Gel","strength":"","mrp":425.0,"id":"M0255"},{"name":"Minscalp F Max","form":"Other","strength":"","mrp":1310.0,"id":"M0256"},{"name":"Minscalp forte","form":"Other","strength":"","mrp":84.0,"id":"M0257"},{"name":"Momerit-F","form":"Other","strength":"","mrp":170.0,"id":"M0258"},{"name":"Mometamus t","form":"Other","strength":"","mrp":140.0,"id":"M0259"},{"name":"Motimesh","form":"Other","strength":"","mrp":270.75,"id":"M0260"},{"name":"Motimesh-SF","form":"Other","strength":"","mrp":244.41,"id":"M0261"},{"name":"Moxitch","form":"Other","strength":"","mrp":199.0,"id":"M0262"},{"name":"MPower 5%","form":"Other","strength":"5%","mrp":1123.03,"id":"M0263"},{"name":"MPower F","form":"Other","strength":"","mrp":1123.0,"id":"M0264"},{"name":"Mprila 10","form":"Other","strength":"","mrp":273.0,"id":"M0265"},{"name":"Mupimesh","form":"Other","strength":"","mrp":211.68,"id":"M0266"},{"name":"Mupisoft","form":"Other","strength":"","mrp":108.33,"id":"M0267"},{"name":"N-Clin gel","form":"Gel","strength":"","mrp":110.0,"id":"M0268"},{"name":"Naftisaft","form":"Other","strength":"","mrp":514.59,"id":"M0269"},{"name":"Neurobion Forte","form":"Other","strength":"","mrp":47.53,"id":"M0270"},{"name":"NEVLON","form":"Other","strength":"","mrp":160.17,"id":"M0271"},{"name":"Nevlon Anti-Itch","form":"Other","strength":"","mrp":360.5,"id":"M0272"},{"name":"Nevsoft","form":"Other","strength":"","mrp":267.19,"id":"M0273"},{"name":"Nioclean AD gel","form":"Gel","strength":"","mrp":201.56,"id":"M0274"},{"name":"Nioclean gel","form":"Gel","strength":"","mrp":173.44,"id":"M0275"},{"name":"Niofine 250mg","form":"Other","strength":"250mg","mrp":150.0,"id":"M0276"},{"name":"Niofine 250mg 7","form":"Other","strength":"250mg","mrp":150.0,"id":"M0277"},{"name":"Niofine forte","form":"Other","strength":"","mrp":180.0,"id":"M0278"},{"name":"Niogenta-F","form":"Other","strength":"","mrp":253.13,"id":"M0279"},{"name":"Nixiper","form":"Other","strength":"","mrp":98.0,"id":"M0280"},{"name":"Nixiper lotion","form":"Lotion","strength":"","mrp":104.0,"id":"M0281"},{"name":"Nizoclin","form":"Other","strength":"","mrp":178.0,"id":"M0282"},{"name":"No patch gel","form":"Gel","strength":"","mrp":1400.0,"id":"M0283"},{"name":"Nu-Whitfield","form":"Other","strength":"","mrp":103.0,"id":"M0284"},{"name":"Nuforce","form":"Other","strength":"","mrp":117.0,"id":"M0285"},{"name":"Nuglo","form":"Other","strength":"","mrp":320.0,"id":"M0286"},{"name":"Nugrow hair oil","form":"Oil","strength":"","mrp":250.0,"id":"M0287"},{"name":"Omnigain M","form":"Other","strength":"","mrp":937.0,"id":"M0288"},{"name":"ONON","form":"Other","strength":"","mrp":129.0,"id":"M0289"},{"name":"Oxidox","form":"Other","strength":"","mrp":168.0,"id":"M0290"},{"name":"Paknet","form":"Other","strength":"","mrp":309.38,"id":"M0291"},{"name":"Pan 40","form":"Other","strength":"","mrp":187.0,"id":"M0292"},{"name":"Pedomax","form":"Other","strength":"","mrp":178.0,"id":"M0293"},{"name":"Pedomax 10","form":"Other","strength":"","mrp":178.0,"id":"M0294"},{"name":"Photofirst","form":"Other","strength":"","mrp":1815.0,"id":"M0295"},{"name":"Pregaba NT","form":"Other","strength":"","mrp":274.2,"id":"M0296"},{"name":"Pregaba NT 10","form":"Other","strength":"","mrp":274.2,"id":"M0297"},{"name":"Prolomet XL 50","form":"Other","strength":"","mrp":93.55,"id":"M0298"},{"name":"Q-Sera","form":"Other","strength":"","mrp":1650.0,"id":"M0299"},{"name":"Q-Sera Black","form":"Other","strength":"","mrp":1425.0,"id":"M0300"},{"name":"R-beclo lotion","form":"Lotion","strength":"","mrp":159.0,"id":"M0301"},{"name":"Rabitor DSR","form":"Other","strength":"","mrp":103.0,"id":"M0302"},{"name":"Radiban nano gel","form":"Gel","strength":"","mrp":660.0,"id":"M0303"},{"name":"Raywart solution","form":"Solution","strength":"","mrp":167.0,"id":"M0304"},{"name":"Rebaheal","form":"Other","strength":"","mrp":344.0,"id":"M0305"},{"name":"Regen-D 60","form":"Other","strength":"","mrp":794.0,"id":"M0306"},{"name":"Renewderm HA","form":"Other","strength":"","mrp":799.0,"id":"M0307"},{"name":"Retiglow Night","form":"Other","strength":"","mrp":1170.0,"id":"M0308"},{"name":"Retisphere 0.04% gel","form":"Gel","strength":"0.04%","mrp":283.0,"id":"M0309"},{"name":"Ridacne SA","form":"Other","strength":"","mrp":699.0,"id":"M0310"},{"name":"Ritch lotion","form":"Lotion","strength":"","mrp":435.0,"id":"M0311"},{"name":"Roxketo","form":"Other","strength":"","mrp":133.0,"id":"M0312"},{"name":"Roxmite","form":"Other","strength":"","mrp":135.0,"id":"M0313"},{"name":"Saferet 10mg","form":"Other","strength":"10mg","mrp":121.0,"id":"M0314"},{"name":"Saferet 20mg","form":"Other","strength":"20mg","mrp":149.0,"id":"M0315"},{"name":"Saferet 5mg","form":"Other","strength":"5mg","mrp":84.0,"id":"M0316"},{"name":"SafNAPI","form":"Other","strength":"","mrp":131.25,"id":"M0317"},{"name":"Salactin","form":"Other","strength":"","mrp":512.0,"id":"M0318"},{"name":"Salex-L","form":"Other","strength":"","mrp":230.0,"id":"M0319"},{"name":"Scarcote gel","form":"Gel","strength":"","mrp":325.0,"id":"M0320"},{"name":"Sealz","form":"Other","strength":"","mrp":190.0,"id":"M0321"},{"name":"Sealz 10","form":"Other","strength":"","mrp":190.0,"id":"M0322"},{"name":"Senosof 10","form":"Other","strength":"","mrp":170.0,"id":"M0323"},{"name":"Setaher","form":"Other","strength":"","mrp":295.0,"id":"M0324"},{"name":"Skinocean","form":"Other","strength":"","mrp":135.0,"id":"M0325"},{"name":"Slvrgen","form":"Other","strength":"","mrp":374.0,"id":"M0326"},{"name":"Sofibar","form":"Soap","strength":"","mrp":195.0,"id":"M0327"},{"name":"Solaban","form":"Other","strength":"","mrp":660.0,"id":"M0328"},{"name":"Solecross","form":"Other","strength":"","mrp":513.0,"id":"M0329"},{"name":"Solnil","form":"Other","strength":"","mrp":550.0,"id":"M0330"},{"name":"Sorbitrate 5","form":"Other","strength":"","mrp":45.83,"id":"M0331"},{"name":"Stactiv","form":"Other","strength":"","mrp":1550.0,"id":"M0332"},{"name":"Stugeron 25","form":"Other","strength":"","mrp":261.0,"id":"M0333"},{"name":"Suncros neo","form":"Sunscreen","strength":"","mrp":850.0,"id":"M0334"},{"name":"Sunkon 30 cream","form":"Cream","strength":"","mrp":285.0,"id":"M0335"},{"name":"Supradyn","form":"Other","strength":"","mrp":68.0,"id":"M0336"},{"name":"Sweatex solution","form":"Solution","strength":"","mrp":275.0,"id":"M0337"},{"name":"T Defence","form":"Tablet","strength":"","mrp":700.0,"id":"M0338"},{"name":"T Defence 10","form":"Tablet","strength":"","mrp":700.0,"id":"M0339"},{"name":"T. Glim M","form":"Tablet","strength":"","mrp":132.0,"id":"M0340"},{"name":"T.Abicort 6","form":"Tablet","strength":"","mrp":150.0,"id":"M0341"},{"name":"T.Ascazin","form":"Tablet","strength":"","mrp":81.0,"id":"M0342"},{"name":"T.Beltas","form":"Tablet","strength":"","mrp":152.0,"id":"M0343"},{"name":"T.Beltas forte","form":"Tablet","strength":"","mrp":201.0,"id":"M0344"},{"name":"T.Bilabloc 40","form":"Tablet","strength":"","mrp":181.0,"id":"M0345"},{"name":"T.Bilactive","form":"Tablet","strength":"","mrp":89.0,"id":"M0346"},{"name":"T.Bilten","form":"Tablet","strength":"","mrp":139.0,"id":"M0347"},{"name":"T.Calmzone plus","form":"Tablet","strength":"","mrp":149.0,"id":"M0348"},{"name":"T.Canitiz","form":"Tablet","strength":"","mrp":177.0,"id":"M0349"},{"name":"T.D3must 60k","form":"Tablet","strength":"60k","mrp":250.0,"id":"M0350"},{"name":"T.Decfil 100","form":"Tablet","strength":"","mrp":17.0,"id":"M0351"},{"name":"T.Drozin 10mg","form":"Tablet","strength":"10mg","mrp":25.0,"id":"M0352"},{"name":"T.Drozin 25mg","form":"Tablet","strength":"25mg","mrp":47.0,"id":"M0353"},{"name":"T.Dutaprost 0.5","form":"Tablet","strength":"","mrp":200.0,"id":"M0354"},{"name":"T.Emcet 5mg","form":"Tablet","strength":"5mg","mrp":46.0,"id":"M0355"},{"name":"T.Ermect plus","form":"Tablet","strength":"","mrp":25.0,"id":"M0356"},{"name":"T.Esbila","form":"Tablet","strength":"","mrp":100.0,"id":"M0357"},{"name":"T.Everactive","form":"Tablet","strength":"","mrp":106.0,"id":"M0358"},{"name":"T.Finabald","form":"Tablet","strength":"","mrp":71.0,"id":"M0359"},{"name":"T.Firmzin","form":"Tablet","strength":"","mrp":62.0,"id":"M0360"},{"name":"T.Follixtra Men","form":"Tablet","strength":"","mrp":174.0,"id":"M0361"},{"name":"T.Follixtra Women","form":"Tablet","strength":"","mrp":174.0,"id":"M0362"},{"name":"T.Griswin 500","form":"Tablet","strength":"","mrp":220.0,"id":"M0363"},{"name":"T.Hista Cross L","form":"Tablet","strength":"","mrp":56.0,"id":"M0364"},{"name":"T.koztafit 250","form":"Tablet","strength":"","mrp":149.0,"id":"M0365"},{"name":"T.Levoher","form":"Tablet","strength":"","mrp":28.0,"id":"M0366"},{"name":"T.Levokon","form":"Tablet","strength":"","mrp":40.0,"id":"M0367"},{"name":"T.Logigris 500","form":"Tablet","strength":"","mrp":171.0,"id":"M0368"},{"name":"T.logihair men","form":"Tablet","strength":"","mrp":222.0,"id":"M0369"},{"name":"T.Logihair women","form":"Tablet","strength":"","mrp":222.0,"id":"M0370"},{"name":"T.Melapik TX","form":"Tablet","strength":"","mrp":182.0,"id":"M0371"},{"name":"T.metrogyl ER600","form":"Tablet","strength":"","mrp":127.0,"id":"M0372"},{"name":"T.Moncit L","form":"Tablet","strength":"","mrp":120.0,"id":"M0373"},{"name":"T.Moncit L kid","form":"Tablet","strength":"","mrp":70.0,"id":"M0374"},{"name":"T.nopatch","form":"Tablet","strength":"","mrp":360.0,"id":"M0375"},{"name":"T.Omnix O","form":"Tablet","strength":"","mrp":257.0,"id":"M0376"},{"name":"T.Pamix","form":"Tablet","strength":"","mrp":694.0,"id":"M0377"},{"name":"T.Rantac 300","form":"Tablet","strength":"","mrp":97.0,"id":"M0378"},{"name":"T.Rantac150","form":"Tablet","strength":"","mrp":50.0,"id":"M0379"},{"name":"T.Restofol","form":"Tablet","strength":"","mrp":191.0,"id":"M0380"},{"name":"T.sinarest","form":"Tablet","strength":"","mrp":123.0,"id":"M0381"},{"name":"T.Terme 250","form":"Tablet","strength":"","mrp":141.0,"id":"M0382"},{"name":"T.Terme 500","form":"Tablet","strength":"","mrp":253.0,"id":"M0383"},{"name":"T.Ternac 250","form":"Tablet","strength":"","mrp":145.0,"id":"M0384"},{"name":"T.Tofaris","form":"Tablet","strength":"","mrp":318.0,"id":"M0385"},{"name":"T.Vibio","form":"Tablet","strength":"","mrp":130.0,"id":"M0386"},{"name":"T.Wiseglu","form":"Tablet","strength":"","mrp":464.0,"id":"M0387"},{"name":"T.yawin C1000","form":"Tablet","strength":"","mrp":112.0,"id":"M0388"},{"name":"T.Zenflox Plus","form":"Tablet","strength":"","mrp":168.0,"id":"M0389"},{"name":"T.Zitahair","form":"Tablet","strength":"","mrp":173.0,"id":"M0390"},{"name":"Telma 40 mg","form":"Other","strength":"40 mg","mrp":213.0,"id":"M0391"},{"name":"Terbirox 250mg","form":"Other","strength":"250mg","mrp":130.0,"id":"M0392"},{"name":"Terbirox 250mg 10","form":"Other","strength":"250mg","mrp":130.0,"id":"M0393"},{"name":"Terbirox 500 mg","form":"Other","strength":"500 mg","mrp":260.0,"id":"M0394"},{"name":"Terbirox 500 mg 10","form":"Other","strength":"500 mg","mrp":260.0,"id":"M0395"},{"name":"Terraglo soap","form":"Soap","strength":"","mrp":170.0,"id":"M0396"},{"name":"Terraglow","form":"Other","strength":"","mrp":720.0,"id":"M0397"},{"name":"Thrombophob","form":"Other","strength":"","mrp":240.57,"id":"M0398"},{"name":"Tinkle","form":"Other","strength":"","mrp":142.0,"id":"M0399"},{"name":"Tofasure","form":"Other","strength":"","mrp":647.0,"id":"M0400"},{"name":"Top-Anc lotion","form":"Lotion","strength":"","mrp":495.0,"id":"M0401"},{"name":"Topitret-0.025%","form":"Other","strength":"0.025%","mrp":131.0,"id":"M0402"},{"name":"Trunex MS","form":"Other","strength":"","mrp":226.5,"id":"M0403"},{"name":"Tufderm cream","form":"Cream","strength":"","mrp":158.62,"id":"M0404"},{"name":"Tufderm-S ointment","form":"Ointment","strength":"","mrp":186.56,"id":"M0405"},{"name":"Tyrodin","form":"Other","strength":"","mrp":820.0,"id":"M0406"},{"name":"Tyrodin body lotion","form":"Lotion","strength":"","mrp":750.0,"id":"M0407"},{"name":"Ubest 20","form":"Other","strength":"","mrp":150.0,"id":"M0408"},{"name":"Ubest 20 10","form":"Other","strength":"","mrp":150.0,"id":"M0409"},{"name":"UV-Grand","form":"Sunscreen","strength":"","mrp":672.0,"id":"M0410"},{"name":"UVBreak","form":"Sunscreen","strength":"","mrp":850.0,"id":"M0411"},{"name":"UVBroad LS","form":"Sunscreen","strength":"","mrp":590.0,"id":"M0412"},{"name":"Vertin 8mg","form":"Other","strength":"8mg","mrp":213.69,"id":"M0413"},{"name":"Vitroclo","form":"Other","strength":"","mrp":126.0,"id":"M0414"},{"name":"Vono 10","form":"Other","strength":"","mrp":84.0,"id":"M0415"},{"name":"Vono 10 10","form":"Other","strength":"","mrp":84.0,"id":"M0416"},{"name":"White Up","form":"Other","strength":"","mrp":405.0,"id":"M0417"},{"name":"Wysolone 10","form":"Other","strength":"","mrp":19.02,"id":"M0418"},{"name":"Xepinoxin","form":"Other","strength":"","mrp":145.31,"id":"M0419"},{"name":"Xoerts Undereye gel","form":"Gel","strength":"","mrp":1390.0,"id":"M0420"},{"name":"Zavet bar","form":"Soap","strength":"","mrp":133.0,"id":"M0421"},{"name":"Zeredol SP","form":"Other","strength":"","mrp":139.69,"id":"M0422"},{"name":"Zerum AZ","form":"Other","strength":"","mrp":1450.0,"id":"M0423"},{"name":"ZIT OUT","form":"Other","strength":"","mrp":170.0,"id":"M0424"},{"name":"Zydip c lotion","form":"Lotion","strength":"","mrp":161.0,"id":"M0425"},{"name":"Zydip lotion","form":"Lotion","strength":"","mrp":192.18,"id":"M0426"},{"name":"Zydip-C cream","form":"Cream","strength":"","mrp":150.0,"id":"M0427"},{"name":"Zykt","form":"Other","strength":"","mrp":163.92,"id":"M0428"},{"name":"Zytee","form":"Other","strength":"","mrp":120.5,"id":"M0429"}];
 
@@ -782,18 +878,18 @@ async function storeSet(key, value){
 }
 
 async function loadPersisted(){
-  // Load Patients
-  try{
-    const res = await fetch(`${API_BASE}/patients`);
-    if(res.ok){
-      const data = await res.json();
-      if(data && data.length > 0) {
-        patients = data;
-      }
+  // Load Patients — Firestore (cloud, synced across devices) first, local storage as fallback
+  if(db){
+    try{
+      await ensurePatientsSeeded();
+      const ok = await attachPatientsListener();
+      if(!ok) db = null;
+    }catch(e){
+      console.warn('Firestore unavailable for patients, falling back to local storage.', e);
+      db = null;
     }
-  }catch(e){
-    console.warn('Backend server unreachable. Falling back to local storage for patients.', e);
-    // Local storage fallback for patients
+  }
+  if(!db){
     try{
       const v = await storeGet('patients-list');
       if(v) patients = JSON.parse(v);
@@ -827,15 +923,6 @@ async function loadPersisted(){
         medicines = medicines.filter(m=>!deletedIds.includes(m.id));
       }
     }catch(err){ console.error('Failed to load deleted medicines from local storage', err); }
-  }
-}
-
-async function reloadPatientsList() {
-  try {
-    const res = await fetch(`${API_BASE}/patients`);
-    if (res.ok) patients = await res.json();
-  } catch (e) {
-    console.error('Failed to reload patients list from API server', e);
   }
 }
 
@@ -1058,24 +1145,26 @@ async function savePatient(){
     history: document.getElementById('npHistory').value,
   };
 
-  let savedId;
+  let savedId = editingPatientId;
   let success = false;
-  try {
-    const payload = { ...fields };
-    if (editingPatientId) payload.id = editingPatientId;
-    
-    const res = await fetch(`${API_BASE}/patients`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (res.ok) {
-      const data = await res.json();
-      savedId = data.id;
+
+  if(db){
+    try{
+      if(editingPatientId){
+        await db.collection(PATIENTS_COLLECTION).doc(editingPatientId).set(fields, {merge:true});
+        savedId = editingPatientId;
+      }else{
+        const newFields = {...fields, visits:0, lastVisit:new Date().toISOString().slice(0,10)};
+        const ref = await db.collection(PATIENTS_COLLECTION).add(newFields);
+        savedId = ref.id;
+      }
+      // Don't hand-edit `patients` here: Firestore's onSnapshot listener echoes local
+      // writes instantly (before this await even resolves) and re-renders on its own.
+      // Mutating the array again here would create a duplicate entry.
       success = true;
+    }catch(err){
+      console.warn('Failed to save patient to Firestore. Using local storage fallback.', err);
     }
-  } catch (err) {
-    console.warn('Failed to save patient to server. Using local storage fallback.', err);
   }
 
   if (!success) {
@@ -1096,8 +1185,6 @@ async function savePatient(){
       savedId = newP.id;
     }
     await persistPatients();
-  } else {
-    await reloadPatientsList();
   }
 
   renderPatientPicker(); renderPatientsGrid();
@@ -1114,20 +1201,18 @@ async function deletePatient(id){
   if(!confirm(`Remove ${p.name} from patient records? This cannot be undone.`)) return;
   
   let success = false;
-  try {
-    const res = await fetch(`${API_BASE}/patients/${id}`, {
-      method: 'DELETE'
-    });
-    if (res.ok) success = true;
-  } catch (err) {
-    console.warn('Failed to delete patient from server. Using local storage fallback.', err);
+  if(db){
+    try{
+      await db.collection(PATIENTS_COLLECTION).doc(id).delete();
+      success = true; // live listener syncs the removal to every other connected device
+    }catch(err){
+      console.warn('Failed to delete patient from Firestore. Using local storage fallback.', err);
+    }
   }
 
+  patients = patients.filter(x=>x.id!==id);
   if (!success) {
-    patients = patients.filter(x=>x.id!==id);
     await persistPatients();
-  } else {
-    await reloadPatientsList();
   }
 
   if(selectedPatient && selectedPatient.id===id){
