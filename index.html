@@ -249,10 +249,10 @@ a{color:inherit; text-decoration:none;}
 .rx-dx .k{font-size:10.5px; text-transform:uppercase; color:var(--muted); font-weight:700; letter-spacing:.05em;}
 .rx-dx p{font-size:13.5px; margin-top:4px;}
 .rx-symbol{font-family:var(--font-display); font-size:26px; font-weight:700; color:var(--navy); margin-bottom:10px;}
-.rx-med-item{display:flex; gap:12px; padding:11px 0; border-bottom:1px solid #F1F5F9;}
+.rx-med-item{display:flex; gap:14px; padding:20px 0; border-bottom:1px solid #F1F5F9;}
 .rx-med-num{width:22px; height:22px; border-radius:50%; background:rgba(37,99,235,0.1); color:var(--blue); font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;}
 .rx-med-item .mn{font-weight:700; font-size:13.5px;}
-.rx-med-item .md{font-size:11.5px; color:var(--muted); font-family:var(--font-mono); margin-top:2px;}
+.rx-med-item .md{font-size:11.5px; color:var(--muted); font-family:var(--font-mono); margin-top:10px; line-height:1.8; letter-spacing:0.01em;}
 .rx-foot{display:flex; justify-content:space-between; align-items:flex-end; margin-top:26px; padding-top:20px; border-top:1px dashed var(--border);}
 .rx-sign .line{width:150px; border-bottom:1px solid var(--navy); margin-bottom:6px; height:34px;}
 .rx-sign .doc{font-weight:700; font-size:12.5px;}
@@ -1441,11 +1441,11 @@ function generatePrescription(){
           <!-- Medicines List -->
           <div style="min-height: 140px;">
             ${lines.map((m,i)=>`
-              <div class="rx-med-item" style="display:flex; gap:12px; padding:10px 0; border-bottom:1px solid #F1F5F9;">
+              <div class="rx-med-item" style="display:flex; gap:14px; padding:20px 0; border-bottom:1px solid #F1F5F9;">
                 <div class="rx-med-num" style="width:20px; height:20px; border-radius:50%; background:rgba(30,58,138,0.1); color:#1E3A8A; font-size:10.5px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">${i+1}</div>
                 <div>
                   <div class="mn" style="font-weight:700; font-size:13.5px;">${m.name}${m.strength? ' — '+m.strength:''}</div>
-                  <div class="md" style="font-size:11.5px; color:var(--muted); font-family:var(--font-mono); margin-top:2px;">${m.dosage||'As directed'}${m.instructions? ' · '+m.instructions:''}${m.days? ' · '+m.days+(/day/i.test(m.days)? '' : ' days'):''}</div>
+                  <div class="md" style="font-size:11.5px; color:var(--muted); font-family:var(--font-mono); margin-top:10px; line-height:1.8; letter-spacing:0.01em;">${m.dosage||'As directed'}${m.instructions? '&nbsp;&nbsp;·&nbsp;&nbsp;'+m.instructions:''}${m.days? '&nbsp;&nbsp;·&nbsp;&nbsp;'+m.days+(/day/i.test(m.days)? '' : ' days'):''}</div>
                 </div>
               </div>`).join('')}
           </div>
@@ -1737,7 +1737,7 @@ async function buildPrescriptionPDF(){
       doc.setFont("Helvetica", "normal");
       y += 13;
       doc.setTextColor(90);
-      doc.text(`${m.dosage||'As directed'}${m.instructions? ' · '+m.instructions:''}${m.days? ' · '+m.days+(/day/i.test(m.days)? '' : ' days'):''}`, contentX + 22, y);
+      doc.text(`${m.dosage||'As directed'}${m.instructions? '   ·   '+m.instructions:''}${m.days? '   ·   '+m.days+(/day/i.test(m.days)? '' : ' days'):''}`, contentX + 22, y);
       doc.setTextColor(15);
       y += 16;
     });
