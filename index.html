@@ -665,6 +665,7 @@ const SAMPLE_RX = [
 /* ====================== STATE ====================== */
 let medicines = [...BASE_MEDICINES];
 let patients = [...SAMPLE_PATIENTS];
+let deletedMedicineIds = [];
 let selectedPatient = null;
 let currentView = 'dashboard';
 let medFormFilter = 'All';
@@ -703,7 +704,7 @@ const NAV_ITEMS = [
   {id:'dashboard', label:'Dashboard', icon:'grid', title:'Dashboard', sub:"Welcome back — here's today at a glance"},
   {id:'new-rx', label:'New Prescription', icon:'pen', title:'New Prescription', sub:'Create a prescription for your patient'},
   {id:'patients', label:'Patients', icon:'users', title:'Patients', sub:'Search records and prescription history'},
-  {id:'medicines', label:'Medicine Database', icon:'pill', title:'Medicine Database', sub: `${medicines.length}+ approved clinic products`, badge:()=>medicines.length},
+  {id:'medicines', label:'Medicine Database', icon:'pill', title:'Medicine Database', sub: `${medicines.length}+ approved clinic products`},
   {id:'settings', label:'Settings', icon:'gear', title:'Settings', sub:'Clinic and doctor profile'},
 ];
 
@@ -834,8 +835,8 @@ async function loadPersisted(){
         db.collection('deleted_medicines').get()
       ]);
       const custom = customSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const deletedIds = deletedSnap.docs.map(d => d.id);
-      medicines = [...BASE_MEDICINES, ...custom].filter(m => !deletedIds.includes(m.id));
+      deletedMedicineIds = deletedSnap.docs.map(d => d.id);
+      medicines = [...BASE_MEDICINES, ...custom].filter(m => !deletedMedicineIds.includes(m.id));
       medicinesLoaded = true;
     } catch (e) {
       console.warn('Firestore unreachable. Falling back to local storage for medicines.', e);
@@ -852,8 +853,8 @@ async function loadPersisted(){
     try{
       const v = await storeGet('deleted-medicines');
       if(v){
-        const deletedIds = JSON.parse(v);
-        medicines = medicines.filter(m=>!deletedIds.includes(m.id));
+        deletedMedicineIds = JSON.parse(v);
+        medicines = medicines.filter(m=>!deletedMedicineIds.includes(m.id));
       }
     }catch(err){ console.error('Failed to load deleted medicines from local storage', err); }
   }
@@ -871,10 +872,11 @@ async function persistCustomMeds(){
   return ok;
 }
 async function persistDeleted(id){
-  let del = [];
-  try{ const v = await storeGet('deleted-medicines'); if(v) del = JSON.parse(v); }catch(e){}
-  del.push(id);
-  const ok = await storeSet('deleted-medicines', JSON.stringify(del));
+  // Uses the in-memory cache (populated once at load) instead of re-fetching
+  // the deleted-medicines list from storage every time — this removes a
+  // network round trip from every single delete action.
+  deletedMedicineIds.push(id);
+  const ok = await storeSet('deleted-medicines', JSON.stringify(deletedMedicineIds));
   if(!ok) showToast('⚠ Could not save changes — storage unavailable');
   return ok;
 }
@@ -1057,7 +1059,7 @@ function openPatientModal(id){
 }
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 
-async function savePatient(){
+function savePatient(){
   const name = document.getElementById('npName').value.trim();
   if(!name){ showToast('Please enter a patient name'); return; }
   const fields = {
@@ -1087,47 +1089,55 @@ async function savePatient(){
     savedId = newP.id;
   }
 
-  if (db) {
-    try {
-      await db.collection('patients').doc(savedId).set(patients.find(p=>p.id===savedId), { merge: true });
-    } catch (e) {
-      console.error('Failed to save patient to Firestore. Saved locally only.', e);
-      showToast('⚠ Saved locally — could not reach Firebase');
-    }
-  }
-  await persistPatients();
-
+  // Update the screen immediately — don't make the user wait on network calls.
   renderPatientPicker(); renderPatientsGrid();
   closeModal('patientModalBg');
   showToast(editingPatientId ? 'Patient updated' : 'Patient added');
   ['npName','npAge','npMobile','npAllergies','npHistory'].forEach(id=>document.getElementById(id).value='');
+  const wasEditing = editingPatientId;
   editingPatientId = null;
   if(selectedPatient && selectedPatient.id===savedId) selectPatient(savedId);
+
+  // Sync to Firestore + local storage in the background, in parallel.
+  const jobs = [persistPatients()];
+  if (db) {
+    jobs.push(
+      db.collection('patients').doc(savedId).set(patients.find(p=>p.id===savedId), { merge: true })
+        .catch(e => {
+          console.error('Failed to save patient to Firestore. Saved locally only.', e);
+          showToast('⚠ Saved locally — could not reach Firebase');
+        })
+    );
+  }
+  Promise.all(jobs);
 }
 
-async function deletePatient(id){
+function deletePatient(id){
   const p = patients.find(x=>x.id===id);
   if(!p) return;
   if(!confirm(`Remove ${p.name} from patient records? This cannot be undone.`)) return;
-  
+
   patients = patients.filter(x=>x.id!==id);
 
-  if (db) {
-    try {
-      await db.collection('patients').doc(id).delete();
-    } catch (e) {
-      console.error('Failed to delete patient from Firestore. Removed locally only.', e);
-      showToast('⚠ Removed locally — could not reach Firebase');
-    }
-  }
-  await persistPatients();
-
+  // Update the screen immediately.
   if(selectedPatient && selectedPatient.id===id){
     selectedPatient = null;
     document.getElementById('selectedPatientCard').innerHTML = '';
   }
   renderPatientPicker(); renderPatientsGrid();
   showToast('Patient removed');
+
+  // Sync to Firestore + local storage in the background, in parallel.
+  const jobs = [persistPatients()];
+  if (db) {
+    jobs.push(
+      db.collection('patients').doc(id).delete().catch(e => {
+        console.error('Failed to delete patient from Firestore. Removed locally only.', e);
+        showToast('⚠ Removed locally — could not reach Firebase');
+      })
+    );
+  }
+  Promise.all(jobs);
 }
 
 /* ====================== PATIENTS VIEW ====================== */
@@ -1192,7 +1202,7 @@ function openMedModal(id){
   document.getElementById('medModalBg').classList.add('open');
 }
 
-async function saveMedicine(){
+function saveMedicine(){
   const name = document.getElementById('nmName').value.trim();
   if(!name){ showToast('Enter a medicine name'); return; }
   const data = {
@@ -1212,38 +1222,47 @@ async function saveMedicine(){
     medicines.push({...data, id:savedId, custom:true});
   }
 
-  const savedMed = medicines.find(m=>m.id===savedId);
-  if (db && savedMed && savedMed.custom) {
-    try {
-      await db.collection('custom_medicines').doc(savedId).set(savedMed, { merge: true });
-    } catch (e) {
-      console.error('Failed to save medicine to Firestore. Saved locally only.', e);
-      showToast('⚠ Saved locally — could not reach Firebase');
-    }
-  }
-  await persistCustomMeds();
-
+  // Update the screen immediately — don't make the user wait on network calls.
   populateFormSelect(); buildFormFilters(); renderMedTable();
   closeModal('medModalBg');
   showToast('Medicine saved');
+
+  // Sync to Firestore + local storage in the background, in parallel.
+  const savedMed = medicines.find(m=>m.id===savedId);
+  const jobs = [];
+  if (db && savedMed && savedMed.custom) {
+    jobs.push(
+      db.collection('custom_medicines').doc(savedId).set(savedMed, { merge: true })
+        .catch(e => {
+          console.error('Failed to save medicine to Firestore. Saved locally only.', e);
+          showToast('⚠ Saved locally — could not reach Firebase');
+        })
+    );
+  }
+  jobs.push(persistCustomMeds());
+  Promise.all(jobs);
 }
 
-async function deleteMedicine(id){
+function deleteMedicine(id){
   medicines = medicines.filter(m=>m.id!==id);
 
-  if (db) {
-    try {
-      await db.collection('custom_medicines').doc(id).delete();
-      await db.collection('deleted_medicines').doc(id).set({ deletedAt: new Date().toISOString() });
-    } catch (e) {
-      console.error('Failed to sync medicine deletion to Firestore. Removed locally only.', e);
-      showToast('⚠ Removed locally — could not reach Firebase');
-    }
-  }
-  await persistDeleted(id);
-  await persistCustomMeds();
-
+  // Update the screen immediately.
   renderMedTable();
+
+  // Sync to Firestore + local storage in the background, in parallel.
+  const jobs = [persistDeleted(id), persistCustomMeds()];
+  if (db) {
+    jobs.push(
+      Promise.all([
+        db.collection('custom_medicines').doc(id).delete(),
+        db.collection('deleted_medicines').doc(id).set({ deletedAt: new Date().toISOString() })
+      ]).catch(e => {
+        console.error('Failed to sync medicine deletion to Firestore. Removed locally only.', e);
+        showToast('⚠ Removed locally — could not reach Firebase');
+      })
+    );
+  }
+  Promise.all(jobs);
   showToast('Medicine removed');
 }
 
