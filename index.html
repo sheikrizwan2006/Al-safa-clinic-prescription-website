@@ -790,6 +790,31 @@ window.addEventListener('DOMContentLoaded', async () => {
    storage, so the app keeps working fully with zero setup. */
 const LS_PREFIX = 'alsafa_rx_';
 
+/* Medicines can be saved in two ways: a brand-new medicine the clinic adds
+   (no matching entry in BASE_MEDICINES), or an edit to one of the ~500
+   built-in catalog medicines (same id as a BASE_MEDICINES entry, just with
+   dosage/instruction/day defaults filled in — like "A-Clin Gel" above).
+   Both need to survive a refresh, so both get treated as "overrides" that
+   get merged back on top of the base catalog when the app loads. */
+function isMedicineOverride(m){
+  const base = BASE_MEDICINES.find(b=>b.id===m.id);
+  if(!base) return true; // brand-new, doctor-added medicine
+  return m.name!==base.name || m.form!==base.form || m.strength!==base.strength ||
+    (m.mrp||0)!==(base.mrp||0) ||
+    (m.defaultDosage||'')!==(base.defaultDosage||'') ||
+    (m.defaultInstructions||'')!==(base.defaultInstructions||'') ||
+    (m.defaultDays||'')!==(base.defaultDays||'');
+}
+function mergeMedicineOverrides(overrides){
+  // Overrides that share an id with a built-in medicine replace that
+  // medicine in place (no duplicate rows); overrides with a new id
+  // (e.g. "CUST...") are appended as genuinely new medicines.
+  const overrideById = new Map(overrides.map(m=>[m.id, m]));
+  const merged = BASE_MEDICINES.map(m => overrideById.has(m.id) ? {...m, ...overrideById.get(m.id)} : m);
+  overrides.forEach(m => { if(!BASE_MEDICINES.some(b=>b.id===m.id)) merged.push(m); });
+  return merged;
+}
+
 async function storeGet(key){
   if(window.storage){
     try{
@@ -848,7 +873,7 @@ async function loadPersisted(){
       ]);
       const custom = customSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       deletedMedicineIds = deletedSnap.docs.map(d => d.id);
-      medicines = [...BASE_MEDICINES, ...custom].filter(m => !deletedMedicineIds.includes(m.id));
+      medicines = mergeMedicineOverrides(custom).filter(m => !deletedMedicineIds.includes(m.id));
       medicinesLoaded = true;
     } catch (e) {
       console.warn('Firestore unreachable. Falling back to local storage for medicines.', e);
@@ -859,7 +884,7 @@ async function loadPersisted(){
       const v = await storeGet('custom-medicines');
       if(v){
         const custom = JSON.parse(v);
-        medicines = [...BASE_MEDICINES, ...custom];
+        medicines = mergeMedicineOverrides(custom);
       }
     }catch(err){ console.error('Failed to load custom medicines from local storage', err); }
     try{
@@ -878,8 +903,8 @@ async function persistPatients(){
   return ok;
 }
 async function persistCustomMeds(){
-  const custom = medicines.filter(m=>m.custom);
-  const ok = await storeSet('custom-medicines', JSON.stringify(custom));
+  const overrides = medicines.filter(isMedicineOverride);
+  const ok = await storeSet('custom-medicines', JSON.stringify(overrides));
   if(!ok) showToast('⚠ Could not save changes — storage unavailable');
   return ok;
 }
@@ -1248,7 +1273,7 @@ function saveMedicine(){
   // Sync to Firestore + local storage in the background, in parallel.
   const savedMed = medicines.find(m=>m.id===savedId);
   const jobs = [];
-  if (db && savedMed && savedMed.custom) {
+  if (db && savedMed) {
     jobs.push(
       db.collection('custom_medicines').doc(savedId).set(savedMed, { merge: true })
         .catch(e => {
