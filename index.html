@@ -1687,6 +1687,7 @@ function patientPrescriptions(patientId){
 function openPatientHistory(id){
   const p = patients.find(x=>x.id===id);
   if(!p) return;
+  currentHistoryPatientId = id;
   const list = patientPrescriptions(id);
   document.getElementById('rxHistoryTitle').textContent = `${p.name} — Prescription History`;
   document.getElementById('rxHistoryBody').innerHTML = list.length ? list.map(r=>`
@@ -1696,10 +1697,37 @@ function openPatientHistory(id){
         <div style="font-size:11px; color:var(--muted); white-space:nowrap;">${r.dateDisplay}</div>
       </div>
       <div style="font-size:11.5px; color:var(--muted); margin-top:4px;">${(r.lines||[]).map(m=>m.name).join(', ') || 'No medicines listed'}</div>
-      <button class="btn btn-ghost" style="margin-top:8px; font-size:11.5px; padding:6px 12px;" onclick="viewHistoricalRx('${r.id}')">View / Print</button>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn btn-ghost" style="font-size:11.5px; padding:6px 12px;" onclick="viewHistoricalRx('${r.id}')">View / Print</button>
+        <button class="btn btn-ghost" style="font-size:11.5px; padding:6px 12px; color:#DC2626;" onclick="deletePrescriptionRecord('${r.id}')">Delete</button>
+      </div>
     </div>
   `).join('') : `<div style="padding:20px; text-align:center; color:var(--muted); font-size:12.5px;">No prescriptions on file yet.</div>`;
   document.getElementById('rxHistoryModalBg').classList.add('open');
+}
+let currentHistoryPatientId = null;
+
+async function deletePrescriptionRecord(id){
+  const r = prescriptions.find(x=>x.id===id);
+  if(!r) return;
+  if(!confirm(`Delete this prescription (${r.diagnosis||'Not specified'}, ${r.dateDisplay})? This cannot be undone.`)) return;
+
+  prescriptions = prescriptions.filter(x=>x.id!==id);
+
+  if (db) {
+    try {
+      await db.collection('prescriptions').doc(id).delete();
+    } catch (e) {
+      console.error('Failed to delete prescription from Firestore. Removed locally only.', e);
+    }
+  }
+  const ok = await storeSet('prescriptions-list', JSON.stringify(prescriptions));
+  if(!ok) showToast('⚠ Could not sync deletion — storage unavailable');
+
+  // Refresh whichever views are showing this data
+  if(currentHistoryPatientId) openPatientHistory(currentHistoryPatientId);
+  renderPatientsGrid();
+  showToast('Prescription deleted');
 }
 
 function viewHistoricalRx(id){
