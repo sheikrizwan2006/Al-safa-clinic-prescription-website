@@ -450,6 +450,7 @@ table.med-table{width:100%; border-collapse:collapse; font-size:12.5px;}
             <div class="patient-search">
               <input placeholder="Search patient..." id="rxPatientSearch" oninput="renderPatientPicker()">
             </div>
+            <div id="todayPatientsBox"></div>
             <div class="patient-list" id="patientPickerList"></div>
             <button class="add-med-btn no-print" style="margin-top:8px;" onclick="openPatientModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add New Patient</button>
             <div id="selectedPatientCard"></div>
@@ -616,6 +617,15 @@ table.med-table{width:100%; border-collapse:collapse; font-size:12.5px;}
   </div>
 </div>
 
+<!-- Prescription History Modal -->
+<div class="modal-bg" id="rxHistoryModalBg">
+  <div class="modal">
+    <div class="modal-head"><h3 id="rxHistoryTitle">Prescription History</h3><button class="modal-close" onclick="closeModal('rxHistoryModalBg')">✕</button></div>
+    <div class="modal-body" id="rxHistoryBody" style="max-height:60vh; overflow-y:auto;"></div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('rxHistoryModalBg')">Close</button></div>
+  </div>
+</div>
+
 <script>
 /* ====================== FIREBASE (PATIENT & MEDICINE DATABASE) ======================
    Paste your Firebase project's config below — Firebase Console → Project Settings →
@@ -679,6 +689,7 @@ let medicines = [...BASE_MEDICINES];
 let patients = [...SAMPLE_PATIENTS];
 let deletedMedicineIds = [];
 let selectedPatient = null;
+let prescriptions = []; // every prescription ever generated, each tagged with patientId
 let currentView = 'dashboard';
 let medFormFilter = 'All';
 let medLineCount = 0;
@@ -895,6 +906,27 @@ async function loadPersisted(){
       }
     }catch(err){ console.error('Failed to load deleted medicines from local storage', err); }
   }
+
+  // ---- Prescription history (every prescription ever generated, per patient) ----
+  let rxLoaded = false;
+  if (db) {
+    try {
+      const snap = await db.collection('prescriptions').get();
+      if (!snap.empty) {
+        prescriptions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        prescriptions.sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+      }
+      rxLoaded = true;
+    } catch (e) {
+      console.warn('Firestore unreachable. Falling back to local storage for prescriptions.', e);
+    }
+  }
+  if (!rxLoaded) {
+    try{
+      const v = await storeGet('prescriptions-list');
+      if(v) prescriptions = JSON.parse(v);
+    }catch(err){ console.error('Failed to load saved prescriptions from local storage', err); }
+  }
 }
 
 async function persistPatients(){
@@ -915,6 +947,22 @@ async function persistDeleted(id){
   deletedMedicineIds.push(id);
   const ok = await storeSet('deleted-medicines', JSON.stringify(deletedMedicineIds));
   if(!ok) showToast('⚠ Could not save changes — storage unavailable');
+  return ok;
+}
+async function persistPrescriptionRecord(rec){
+  // Saves one prescription permanently against its patient. Tries Firestore
+  // first (so it's visible from any device); falls back to saving the whole
+  // local list so nothing is lost even offline.
+  if (db) {
+    try {
+      await db.collection('prescriptions').doc(rec.id).set(rec);
+      return true;
+    } catch (e) {
+      console.error('Failed to save prescription to Firestore. Saved locally only.', e);
+    }
+  }
+  const ok = await storeSet('prescriptions-list', JSON.stringify(prescriptions));
+  if(!ok) showToast('⚠ Could not save prescription — storage unavailable');
   return ok;
 }
 
@@ -1045,6 +1093,7 @@ function buildDashboard(){
 function renderPatientPicker(){
   const q = (document.getElementById('rxPatientSearch')?.value || '').toLowerCase();
   const list = patients.filter(p=>p.name.toLowerCase().includes(q) || p.mobile.includes(q));
+  renderTodayPatients();
   document.getElementById('patientPickerList').innerHTML = list.map(p=>{
     const initials = p.name.split(' ').map(w=>w[0]).join('').slice(0,2);
     return `<div class="patient-item ${selectedPatient && selectedPatient.id===p.id?'selected':''}">
@@ -1056,6 +1105,25 @@ function renderPatientPicker(){
       </div>
     </div>`;
   }).join('') || `<div style="padding:14px; font-size:12px; color:var(--muted);">No patients found.</div>`;
+}
+
+function renderTodayPatients(){
+  const box = document.getElementById('todayPatientsBox');
+  if(!box) return;
+  const todayISO = new Date().toISOString().slice(0,10);
+  const todays = patients.filter(p => (p.createdAt||'').slice(0,10) === todayISO);
+  if(!todays.length){ box.innerHTML=''; return; }
+  box.innerHTML = `
+    <div style="margin:12px 0 6px; font-size:10.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;">Today's Patients (${todays.length})</div>
+    <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+      ${todays.map(p=>{
+        const initials = p.name.split(' ').map(w=>w[0]).join('').slice(0,2);
+        return `<button onclick="selectPatient('${p.id}')" style="display:flex; align-items:center; gap:6px; padding:5px 10px 5px 5px; border-radius:999px; border:1px solid var(--border); background:${selectedPatient && selectedPatient.id===p.id ? 'rgba(37,99,235,0.1)' : '#fff'}; cursor:pointer; font-family:inherit;">
+          <span style="width:20px; height:20px; border-radius:50%; background:rgba(37,99,235,0.12); color:#1E3A8A; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;">${initials}</span>
+          <span style="font-size:11.5px; font-weight:600;">${p.name}</span>
+        </button>`;
+      }).join('')}
+    </div>`;
 }
 
 function selectPatient(id){
@@ -1121,6 +1189,7 @@ function savePatient(){
       ...fields,
       visits: 0,
       lastVisit: new Date().toISOString().slice(0,10),
+      createdAt: new Date().toISOString(),
     };
     patients.unshift(newP);
     savedId = newP.id;
@@ -1183,6 +1252,10 @@ function renderPatientsGrid(){
   const list = patients.filter(p=>p.name.toLowerCase().includes(q));
   document.getElementById('patientsGrid').innerHTML = list.map(p=>{
     const initials = p.name.split(' ').map(w=>w[0]).join('').slice(0,2);
+    const rx = patientPrescriptions(p.id);
+    const visits = rx.length || p.visits || 0;
+    const lastVisit = rx[0] ? rx[0].dateDisplay : (p.lastVisit || '—');
+    const historyLine = rx[0] ? `Last diagnosis: ${rx[0].diagnosis||'Not specified'}` : (p.history || 'No history on file');
     return `<div class="card patient-card">
       <div class="pc-top">
         <div class="pc-avatar">${initials}</div>
@@ -1192,12 +1265,15 @@ function renderPatientsGrid(){
           <button onclick="deletePatient('${p.id}')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6"/></svg></button>
         </div>
       </div>
-      <div style="font-size:11.5px; color:var(--muted); margin-top:10px;">${p.history || 'No history on file'}</div>
+      <div style="font-size:11.5px; color:var(--muted); margin-top:10px;">${historyLine}</div>
       <div class="pc-stats">
-        <div class="pc-stat"><div class="v">${p.visits}</div><div class="l">Visits</div></div>
-        <div class="pc-stat"><div class="v">${p.lastVisit}</div><div class="l">Last Visit</div></div>
+        <div class="pc-stat"><div class="v">${visits}</div><div class="l">Visits</div></div>
+        <div class="pc-stat"><div class="v">${lastVisit}</div><div class="l">Last Visit</div></div>
       </div>
-      <button class="btn btn-ghost" style="width:100%; margin-top:12px; justify-content:center;" onclick="selectPatient('${p.id}'); goView('new-rx');">New Prescription</button>
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <button class="btn btn-ghost" style="flex:1; justify-content:center;" onclick="openPatientHistory('${p.id}')">History (${visits})</button>
+        <button class="btn btn-primary" style="flex:1; justify-content:center;" onclick="selectPatient('${p.id}'); goView('new-rx');">New Prescription</button>
+      </div>
     </div>`;
   }).join('');
 }
@@ -1565,9 +1641,28 @@ function generatePrescription(){
     });
   }catch(e){ console.error(e); }
 
-  window._lastRx = {rxId, patient:selectedPatient, diagnosis, lines, notes, today,
-    followup: followupDate ? `${followupDays} day${followupDays==1?'':'s'} (${followupDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})})` : ''};
-  
+  const followupStr = followupDate ? `${followupDays} day${followupDays==1?'':'s'} (${followupDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})})` : '';
+  window._lastRx = {rxId, patient:selectedPatient, diagnosis, lines, notes, today, followup: followupStr};
+
+  // ---- Save this prescription permanently against the patient ----
+  const rxDateISO = rxDateVal || new Date().toISOString().slice(0,10);
+  const rxRecord = {
+    id: rxId,
+    patientId: selectedPatient.id,
+    patientName: selectedPatient.name,
+    diagnosis, lines, notes,
+    followup: followupStr,
+    dateISO: rxDateISO,
+    dateDisplay: today,
+    html, // the fully-rendered prescription, so it can be reprinted exactly as issued
+    createdAt: new Date().toISOString()
+  };
+  prescriptions.unshift(rxRecord);
+  persistPrescriptionRecord(rxRecord);
+
+  // Refresh this patient's visit count / last-visit stat from their real history
+  renderPatientsGrid();
+
   // Add to dashboard recent prescriptions list
   const newRxItem = {
     patient: selectedPatient.name,
@@ -1579,7 +1674,51 @@ function generatePrescription(){
   SAMPLE_RX.unshift(newRxItem);
   buildDashboard();
 
-  showToast('Prescription generated');
+  showToast('Prescription generated & saved to patient record');
+}
+
+/* ====================== PRESCRIPTION HISTORY (per patient) ====================== */
+function patientPrescriptions(patientId){
+  return prescriptions
+    .filter(r=>r.patientId===patientId)
+    .sort((a,b)=> new Date(b.dateISO) - new Date(a.dateISO));
+}
+
+function openPatientHistory(id){
+  const p = patients.find(x=>x.id===id);
+  if(!p) return;
+  const list = patientPrescriptions(id);
+  document.getElementById('rxHistoryTitle').textContent = `${p.name} — Prescription History`;
+  document.getElementById('rxHistoryBody').innerHTML = list.length ? list.map(r=>`
+    <div style="padding:12px 14px; border:1px solid var(--border); border-radius:12px; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+        <div style="font-weight:700; font-size:13px;">${r.diagnosis||'Not specified'}</div>
+        <div style="font-size:11px; color:var(--muted); white-space:nowrap;">${r.dateDisplay}</div>
+      </div>
+      <div style="font-size:11.5px; color:var(--muted); margin-top:4px;">${(r.lines||[]).map(m=>m.name).join(', ') || 'No medicines listed'}</div>
+      <button class="btn btn-ghost" style="margin-top:8px; font-size:11.5px; padding:6px 12px;" onclick="viewHistoricalRx('${r.id}')">View / Print</button>
+    </div>
+  `).join('') : `<div style="padding:20px; text-align:center; color:var(--muted); font-size:12.5px;">No prescriptions on file yet.</div>`;
+  document.getElementById('rxHistoryModalBg').classList.add('open');
+}
+
+function viewHistoricalRx(id){
+  const r = prescriptions.find(x=>x.id===id);
+  if(!r) return;
+  closeModal('rxHistoryModalBg');
+  goView('new-rx');
+  document.getElementById('rxSheet').innerHTML = r.html;
+  document.getElementById('rxPreviewWrap').style.display='block';
+  document.getElementById('rxPreviewWrap').scrollIntoView({behavior:'smooth', block:'start'});
+  document.getElementById('qrcode').innerHTML='';
+  try{
+    new QRCode(document.getElementById('qrcode'), {
+      text: `${r.id} | ${r.patientName} | ${r.dateDisplay}`,
+      width:74, height:74, colorDark:'#0F172A', colorLight:'#ffffff'
+    });
+  }catch(e){ console.error(e); }
+  window._lastRx = {rxId:r.id, patient:patients.find(p=>p.id===r.patientId)||{name:r.patientName}, diagnosis:r.diagnosis, lines:r.lines, notes:r.notes, today:r.dateDisplay, followup:r.followup};
+  showToast('Showing saved prescription');
 }
 
 async function buildPrescriptionPDF(){
