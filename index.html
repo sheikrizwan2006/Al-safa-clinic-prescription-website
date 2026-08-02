@@ -1065,8 +1065,10 @@ function showToast(msg){
 
 /* ====================== DASHBOARD ====================== */
 function buildDashboard(){
+  const todayISO = new Date().toISOString().slice(0,10);
+  const rxToday = prescriptions.filter(r => r.dateISO === todayISO).length;
   const stats = [
-    {label:'Prescriptions Today', value: SAMPLE_RX.length.toString(), icon:'pen', color:'blue', delta:'+18% vs yesterday'},
+    {label:'Prescriptions Today', value: rxToday.toString(), icon:'pen', color:'blue', delta:'+18% vs yesterday'},
     {label:'Total Patients', value: patients.length.toString(), icon:'users', color:'emerald', delta:'+2 this week'},
     {label:'Avg. Time Saved', value:'70%', icon:'clock', color:'amber', delta:'vs manual writing'},
     {label:'Medicines on File', value: medicines.length.toString(), icon:'check', color:'blue', delta:'in database'},
@@ -1727,6 +1729,7 @@ async function deletePrescriptionRecord(id){
   // Refresh whichever views are showing this data
   if(currentHistoryPatientId) openPatientHistory(currentHistoryPatientId);
   renderPatientsGrid();
+  buildDashboard();
   showToast('Prescription deleted');
 }
 
