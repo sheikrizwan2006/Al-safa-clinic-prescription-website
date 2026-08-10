@@ -1498,8 +1498,49 @@ function resetEditor(){
 }
 
 /* ====================== GENERATE PRESCRIPTION ====================== */
-let rxCounter = 10482;
-function generatePrescription(){
+// NOTE: rxCounter used to be a plain in-memory variable hardcoded to 10482.
+// That meant it reset on every page load, so the first prescription(s)
+// generated after any reload/next-day session reused IDs that already
+// existed in Firestore. Because persistPrescriptionRecord() saves with
+// .doc(id).set(rec), a reused ID silently OVERWRITES the old record —
+// that was the bug causing prescriptions to "disappear" the next day.
+// getNextRxId() below fixes this by asking Firestore for the next number
+// atomically (via a transaction), so it can never reset and can never
+// collide even if two devices generate a prescription at the same time.
+async function getNextRxId(){
+  const localMax = () => prescriptions.reduce((max, p) => {
+    const n = parseInt(String(p.id||'').replace('ASC-',''), 10);
+    return isNaN(n) ? max : Math.max(max, n);
+  }, 10482);
+
+  if (db) {
+    try {
+      const counterRef = db.collection('meta').doc('rxCounter');
+      const nextNum = await db.runTransaction(async (tx) => {
+        const counterSnap = await tx.get(counterRef);
+        let current;
+        if (counterSnap.exists && typeof counterSnap.data().value === 'number') {
+          current = counterSnap.data().value;
+        } else {
+          // First run ever: seed from the highest ID already in Firestore
+          // so we never reuse a number that's already in use.
+          current = localMax();
+        }
+        const next = current + 1;
+        tx.set(counterRef, { value: next });
+        return next;
+      });
+      return 'ASC-' + nextNum;
+    } catch (e) {
+      console.error('Failed to get next Rx number from Firestore counter, falling back to local calculation.', e);
+    }
+  }
+  // Offline / Firestore unavailable: still avoid colliding with anything
+  // already loaded into memory for this session.
+  return 'ASC-' + (localMax() + 1);
+}
+
+async function generatePrescription(){
   if(!selectedPatient){ showToast('Select a patient first'); return; }
   const diagnosis = document.getElementById('fDiagnosis').value || 'Not specified';
   const followupDays = document.getElementById('fFollowup').value;
@@ -1517,8 +1558,7 @@ function generatePrescription(){
 
   if(lines.length===0){ showToast('Add at least one medicine'); return; }
 
-  rxCounter++;
-  const rxId = 'ASC-'+rxCounter;
+  const rxId = await getNextRxId();
   const rxDateVal = document.getElementById('fRxDate').value;
   const rxDateObj = rxDateVal ? new Date(rxDateVal+'T00:00:00') : new Date();
   const today = rxDateObj.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
