@@ -11,6 +11,7 @@
 <!-- Firebase (used for the Patients & Medicines database — see the Firebase setup guide) -->
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <style>
 /* ============ DESIGN TOKENS ============ */
 :root{
@@ -382,7 +383,9 @@ table.med-table{width:100%; border-collapse:collapse; font-size:12.5px;}
       <input id="loginPassword" type="password" placeholder="••••••••" style="width:100%; padding:12px 14px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); border-radius:12px; color:#fff; font-size:13.5px; outline:none; transition:border-color .15s; box-sizing:border-box;" onfocus="this.style.borderColor='rgba(37,99,235,0.5)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'" onkeypress="if(event.key === 'Enter') performLogin()">
     </div>
     
-    <button class="btn" onclick="performLogin()" style="width:100%; justify-content:center; padding:12px; font-size:14px; font-weight:600; border-radius:12px; background:linear-gradient(135deg, #10B981, #059669); color:#fff; border:none; cursor:pointer; box-shadow:0 8px 20px rgba(16,185,129,0.25); display:flex; align-items:center; gap:8px;">
+    <div id="loginError" style="display:none; text-align:left; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.3); color:#FCA5A5; font-size:12px; font-weight:500; padding:10px 12px; border-radius:10px; margin-bottom:16px;"></div>
+
+    <button id="loginBtn" class="btn" onclick="performLogin()" style="width:100%; justify-content:center; padding:12px; font-size:14px; font-weight:600; border-radius:12px; background:linear-gradient(135deg, #10B981, #059669); color:#fff; border:none; cursor:pointer; box-shadow:0 8px 20px rgba(16,185,129,0.25); display:flex; align-items:center; gap:8px;">
       <span>Log In</span>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
     </button>
@@ -643,15 +646,18 @@ const firebaseConfig = {
 };
 
 let db = null;
+let auth = null;
 const FIREBASE_CONFIGURED = firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY";
 if (FIREBASE_CONFIGURED && window.firebase) {
   try {
     firebase.initializeApp(firebaseConfig);
     db = firebase.firestore();
+    auth = firebase.auth();
     console.log('Connected to Firebase — patients & medicines will sync to Firestore.');
   } catch (e) {
     console.error('Firebase initialization failed. Falling back to local storage only.', e);
     db = null;
+    auth = null;
   }
 }
 
@@ -740,45 +746,110 @@ const ICONS = {
   gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 
-/* ====================== LOGIN STATE ====================== */
-function checkLoginState() {
-  const loggedIn = localStorage.getItem('alsafa_logged_in') === 'true';
+/* ====================== LOGIN STATE (Firebase Authentication) ======================
+   Real accounts are managed in Firebase Console → Authentication → Users (Email/Password
+   provider). No credentials are stored in this file — sign-in is verified by Firebase
+   itself, and Firebase keeps the session alive across refreshes/tabs automatically. */
+let AUTH_READY = false; // becomes true once we get the first onAuthStateChanged callback
+
+function showLoginOverlay(show) {
   const overlay = document.getElementById('loginOverlay');
-  if (overlay) {
-    if (loggedIn) {
-      overlay.style.display = 'none';
+  if (!overlay) return;
+  overlay.style.display = show ? 'flex' : 'none';
+  if (show) setTimeout(() => document.getElementById('loginEmail')?.focus(), 100);
+}
+
+function setLoginBusy(busy, errorMsg) {
+  const btn = document.getElementById('loginBtn');
+  const errBox = document.getElementById('loginError');
+  if (btn) {
+    btn.disabled = busy;
+    btn.style.opacity = busy ? '0.6' : '1';
+    btn.style.cursor = busy ? 'not-allowed' : 'pointer';
+    btn.querySelector('span').textContent = busy ? 'Signing in…' : 'Log In';
+  }
+  if (errBox) {
+    if (errorMsg) {
+      errBox.textContent = errorMsg;
+      errBox.style.display = 'block';
     } else {
-      overlay.style.display = 'flex';
-      setTimeout(() => document.getElementById('loginEmail').focus(), 100);
+      errBox.style.display = 'none';
     }
   }
 }
 
+function friendlyAuthError(code) {
+  switch (code) {
+    case 'auth/invalid-email': return 'That doesn\'t look like a valid email address.';
+    case 'auth/user-not-found':
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password': return 'Incorrect email or password.';
+    case 'auth/too-many-requests': return 'Too many attempts. Please wait a bit and try again.';
+    case 'auth/network-request-failed': return 'Network error — check your connection and try again.';
+    case 'auth/user-disabled': return 'This account has been disabled.';
+    default: return 'Login failed. Please try again.';
+  }
+}
+
 function performLogin() {
+  if (!auth) { showToast('❌ Firebase Authentication is not set up yet'); return; }
   const email = document.getElementById('loginEmail').value.trim();
   const pass = document.getElementById('loginPassword').value;
-  
-  if (email === "alsafapolyclinicchennai@gmail.com" && pass === "Fathima786#") {
-    localStorage.setItem('alsafa_logged_in', 'true');
-    checkLoginState();
-    showToast('Logged in successfully');
-  } else {
-    showToast('❌ Invalid email or password');
-  }
+  if (!email || !pass) { setLoginBusy(false, 'Please enter both email and password.'); return; }
+
+  setLoginBusy(true, null);
+  auth.signInWithEmailAndPassword(email, pass)
+    .then(() => {
+      // onAuthStateChanged below handles hiding the overlay + loading data
+      document.getElementById('loginPassword').value = '';
+    })
+    .catch((err) => {
+      console.error('Login failed:', err);
+      setLoginBusy(false, friendlyAuthError(err.code));
+    });
 }
 
 function performLogout() {
-  if (confirm('Are you sure you want to log out?')) {
-    localStorage.removeItem('alsafa_logged_in');
-    checkLoginState();
-    document.getElementById('loginEmail').value = '';
-    document.getElementById('loginPassword').value = '';
-  }
+  if (!confirm('Are you sure you want to log out?')) return;
+  if (!auth) return;
+  auth.signOut().catch(err => console.error('Logout failed:', err));
 }
 
-/* ====================== INIT ====================== */
-window.addEventListener('DOMContentLoaded', async () => {
-  checkLoginState();
+/* Fires once immediately on page load with the current session (if any), and again
+   every time the user signs in or out — this is the single source of truth for the UI. */
+function initAuthListener() {
+  if (!auth) {
+    // No Firebase configured — nothing to gate the app behind.
+    showLoginOverlay(false);
+    AUTH_READY = true;
+    return;
+  }
+  auth.onAuthStateChanged(async (user) => {
+    const firstLoad = !AUTH_READY;
+    AUTH_READY = true;
+    if (user) {
+      showLoginOverlay(false);
+      setLoginBusy(false, null);
+      const nameEl = document.getElementById('sidebarDocName');
+      if (nameEl) { nameEl.textContent = user.email; nameEl.title = user.email; }
+      if (firstLoad) {
+        await startApp();
+      }
+    } else {
+      showLoginOverlay(true);
+    }
+  });
+}
+
+/* ====================== INIT ======================
+   startApp() (the actual data load + UI build) now only runs once Firebase confirms
+   there's a signed-in user — this keeps patient data from loading behind the login
+   overlay, and avoids hitting Firestore before auth is ready (Firestore security rules
+   typically require request.auth != null anyway). */
+let APP_STARTED = false;
+async function startApp() {
+  if (APP_STARTED) return; // guard against double-start if auth state fires twice
+  APP_STARTED = true;
   await loadPersisted();
   buildNav();
   buildDashboard();
@@ -793,6 +864,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadSettings();
   goView('dashboard');
   document.getElementById('fRxDate').value = new Date().toISOString().slice(0,10);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  initAuthListener();
 });
 
 /* ====================== PERSISTENCE (resilient storage layer) ======================
